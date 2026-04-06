@@ -1,0 +1,10 @@
+streamlit
+folium
+streamlit-folium
+numpy
+pandas
+plotly
+fpdf2
+pdfplumber
+pypdf
+kaleido
