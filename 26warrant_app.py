@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 # SECTION 2: CONSTANTS — CA MUTCD 2026, Chapter 4C
 # ==============================================================================
 
-PDF_REFERENCE_PATH = Path(r"C:\Users\anaft\Warrant\References\camutcd-2026-4c.pdf")
+PDF_REFERENCE_PATH = Path(__file__).parent / "References" / "camutcd-2026-4c.pdf"
 PDF_FOOTER_CITE = (
     "Thresholds per CA MUTCD 2026, Chapter 4C  |  "
     "Reference: camutcd-2026-4c.pdf"
