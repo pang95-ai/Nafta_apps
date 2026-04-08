@@ -982,6 +982,24 @@ def make_w4_chart(four_hr: list[tuple[int, int]], use_70pct: bool, slow_walkers:
 # SECTION 10: PDF REPORT GENERATION
 # ==============================================================================
 
+_UNICODE_REPLACEMENTS: dict[str, str] = {
+    "\u2014": " - ",   # em dash —
+    "\u2013": "-",     # en dash –
+    "\u2018": "'",     # left single quotation mark '
+    "\u2019": "'",     # right single quotation mark '
+    "\u201c": '"',     # left double quotation mark "
+    "\u201d": '"',     # right double quotation mark "
+    "\u2026": "...",   # ellipsis …
+    "\u00a0": " ",     # non-breaking space
+}
+
+def _pdf_safe(text: str) -> str:
+    """Replace Unicode characters unsupported by Helvetica with ASCII equivalents."""
+    for char, replacement in _UNICODE_REPLACEMENTS.items():
+        text = text.replace(char, replacement)
+    return text
+
+
 class WarrantPDF(FPDF):
     """FPDF2 subclass with consistent CA MUTCD header and footer."""
 
@@ -990,6 +1008,26 @@ class WarrantPDF(FPDF):
 
     def set_project(self, name: str) -> None:
         self._project_name = name
+
+    def cell(self, *args, **kwargs) -> "WarrantPDF":
+        if args:
+            args = list(args)
+            if len(args) > 2 and isinstance(args[2], str):
+                args[2] = _pdf_safe(args[2])
+            args = tuple(args)
+        if "text" in kwargs and isinstance(kwargs["text"], str):
+            kwargs["text"] = _pdf_safe(kwargs["text"])
+        return super().cell(*args, **kwargs)
+
+    def multi_cell(self, *args, **kwargs) -> "WarrantPDF":
+        if args:
+            args = list(args)
+            if len(args) > 2 and isinstance(args[2], str):
+                args[2] = _pdf_safe(args[2])
+            args = tuple(args)
+        if "text" in kwargs and isinstance(kwargs["text"], str):
+            kwargs["text"] = _pdf_safe(kwargs["text"])
+        return super().multi_cell(*args, **kwargs)
 
     def header(self) -> None:
         self.set_font("Helvetica", "B", 10)
