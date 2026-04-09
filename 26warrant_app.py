@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import io
 import logging
-from dataclasses import dataclass, field
+import json
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import NamedTuple
@@ -1227,6 +1228,93 @@ _DEFAULT_HOURS: list[HourlyVolumes] = [
     HourlyVolumes(h, 0, 0) for h in range(8)
 ]
 
+# ==============================================================================
+# SECTION 11b: SESSION SERIALISATION
+# ==============================================================================
+
+def _session_to_json() -> str:
+    """Serialise saveable session-state keys to a JSON string."""
+    ss = st.session_state
+
+    def _hvlist(key: str, default_hours: list[int]) -> list[dict]:
+        items = ss.get(key, [HourlyVolumes(h) for h in default_hours])
+        return [asdict(hv) for hv in items]
+
+    def _wr(key: str):
+        val = ss.get(key)
+        return asdict(val) if val is not None else None
+
+    payload = {
+        "_schema_version": 1,
+        "proj": asdict(ss.get("proj", ProjectInfo())),
+        "w1_hours": _hvlist("w1_hours", list(range(8))),
+        "w2_hours": _hvlist("w2_hours", list(range(4))),
+        "w3_peak": asdict(ss.get("w3_peak", HourlyVolumes(7))),
+        "w4_four_hr": [list(t) for t in ss.get("w4_four_hr", [(0, 0)] * 4)],
+        "w4_peak": list(ss.get("w4_peak", (0, 0))),
+        **{f"w{n}_result": _wr(f"w{n}_result") for n in range(1, 10)},
+        "accessibility_checked": dict(ss.get("accessibility_checked", {})),
+    }
+    return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+def _load_session_from_json(data: dict) -> None:
+    """Restore saveable session-state keys from a parsed JSON dict."""
+
+    def _hv(d: dict) -> HourlyVolumes:
+        return HourlyVolumes(
+            hour      = int(d.get("hour", 0)),
+            major_vph = int(d.get("major_vph", 0)),
+            minor_vph = int(d.get("minor_vph", 0)),
+            ped_vph   = int(d.get("ped_vph", 0)),
+            bike_vph  = int(d.get("bike_vph", 0)),
+        )
+
+    def _wr(d) -> "WarrantResult | None":
+        if d is None:
+            return None
+        return WarrantResult(
+            warrant_num = int(d.get("warrant_num", 0)),
+            name        = str(d.get("name", "")),
+            satisfied   = bool(d.get("satisfied", False)),
+            notes       = list(d.get("notes", [])),
+            detail_rows = list(d.get("detail_rows", [])),
+        )
+
+    pd_ = data.get("proj", {})
+    st.session_state["proj"] = ProjectInfo(
+        name       = pd_.get("name", "Intersection Name"),
+        location   = pd_.get("location", ""),
+        county     = pd_.get("county", ""),
+        route      = pd_.get("route", ""),
+        district   = pd_.get("district", ""),
+        analyst    = pd_.get("analyst", ""),
+        checker    = pd_.get("checker", ""),
+        calc_date  = pd_.get("calc_date", date.today().isoformat()),
+        check_date = pd_.get("check_date", ""),
+        lat        = float(pd_.get("lat", 34.0522)),
+        lon        = float(pd_.get("lon", -118.2437)),
+    )
+    st.session_state["w1_hours"] = [
+        _hv(d) for d in data.get("w1_hours", [{"hour": h} for h in range(8)])
+    ]
+    st.session_state["w2_hours"] = [
+        _hv(d) for d in data.get("w2_hours", [{"hour": h} for h in range(4)])
+    ]
+    st.session_state["w3_peak"] = _hv(data.get("w3_peak", {"hour": 7}))
+    st.session_state["w4_four_hr"] = [
+        tuple(t) for t in data.get("w4_four_hr", [[0, 0]] * 4)
+    ]
+    st.session_state["w4_peak"] = tuple(data.get("w4_peak", [0, 0]))
+    for n in range(1, 10):
+        k = f"w{n}_result"
+        st.session_state[k] = _wr(data.get(k))
+    loaded_acc = data.get("accessibility_checked", {})
+    st.session_state["accessibility_checked"] = {
+        item: bool(loaded_acc.get(item, False)) for item in PROWAG_CHECKLIST
+    }
+
+
 def _init_session_state() -> None:
     """Initialise all session-state keys to defaults on first run."""
     defaults: dict = {
@@ -1288,6 +1376,52 @@ def render_sidebar(pdf_ref: dict) -> None:
         proj.checker    = st.text_input("Checker",             value=proj.checker,    key="in_proj_checker")
         proj.calc_date  = st.text_input("Calc Date",           value=proj.calc_date,  key="in_proj_date")
         st.session_state["proj"] = proj
+
+        # ── Save / Load Session ──────────────────────────────────────────────
+        st.markdown("---")
+        st.subheader("Save / Load Session")
+
+        proj_name = st.session_state.get("proj", ProjectInfo()).name
+        safe_name = (
+            "".join(c if c.isalnum() or c in " _-" else "_" for c in proj_name)
+            .strip().replace(" ", "_") or "warrant"
+        )
+        try:
+            json_str = _session_to_json()
+        except Exception as exc:
+            json_str = json.dumps({"error": str(exc)})
+            st.error(f"Session serialisation error: {exc}")
+
+        st.download_button(
+            label="Download Session (.json)",
+            data=json_str.encode("utf-8"),
+            file_name=f"{safe_name}_warrant_session.json",
+            mime="application/json",
+            key="dl_session",
+            help="Save all warrant inputs and results to a JSON file.",
+        )
+
+        uploaded = st.file_uploader(
+            "Load Session (.json)",
+            type=["json"],
+            key="session_uploader",
+            help="Upload a previously saved session JSON to restore all inputs.",
+        )
+        if uploaded is not None:
+            try:
+                session_data = json.loads(uploaded.read().decode("utf-8"))
+                if not isinstance(session_data, dict):
+                    raise ValueError("Session file is not a JSON object.")
+                if session_data.get("_schema_version", 1) > 1:
+                    st.warning("Session file is from a newer version; some fields may be ignored.")
+                _load_session_from_json(session_data)
+                st.success("Session loaded. Refreshing...")
+                st.rerun()
+            except json.JSONDecodeError as exc:
+                st.error(f"Invalid JSON file: {exc}")
+            except Exception as exc:
+                st.error(f"Failed to load session: {exc}")
+                logger.error("Session load error", exc_info=True)
 
 
 # ==============================================================================
